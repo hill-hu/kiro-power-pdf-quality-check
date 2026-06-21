@@ -10,42 +10,59 @@ author: "EndoAngel Team"
 
 ## Overview
 
-Automatically detect layout issues in PDF files generated from Markdown using fpdf2. Checks for text overlap, page boundary overflow, and abnormal line spacing - common problems when rendering CJK+English mixed content.
+Automatically detect layout issues in PDF files generated from Markdown using fpdf2. Checks for text overlap, page boundary overflow, and abnormal line spacing — common problems when rendering CJK+English mixed content.
 
-## When to Use
+This is a Knowledge Base Power that provides:
+- A ready-to-use Python detection script
+- Automated workflow rules for post-generation quality checks
+- fpdf2 best practices for CJK content (in steering file)
 
-After generating any PDF file (especially with fpdf2 from Markdown source), run the layout check to verify quality before delivery.
+## Available Steering Files
 
-## Quick Start
+- **fpdf2-best-practices.md** — Complete guide to avoiding CJK layout issues with fpdf2, including known pitfalls and fixes
 
-**Prerequisites:** Python 3.10+ with PyMuPDF (`pip install PyMuPDF`)
+## Onboarding
 
-**Usage:** `python pdf_layout_check.py <path_to_pdf>`
+### Prerequisites
 
-**Output:** `PASS` or `ISSUES FOUND` with details.
+- Python 3.10+ (tested with 3.13)
+- PyMuPDF library
 
-## Detection Capabilities
+### Installation
 
-| Check | What it detects | Threshold |
-|-------|----------------|-----------|
-| Overflow | Text beyond page boundaries | >10pt beyond margin |
-| Overlap | Two text blocks same space | >5pt² intersection |
-| Spacing | Adjacent lines overlapping | gap < -2pt |
+```bash
+pip install PyMuPDF
+```
 
-## The Check Script
+Verify installation:
+```bash
+python -c "import pymupdf; print(pymupdf.__doc__)"
+```
 
-Copy this to your project:
+### Deploy the Check Script
+
+Copy the script below to your project (e.g., `scripts/pdf_layout_check.py` or any preferred location):
 
 ```python
+"""
+PDF Layout Quality Check
+Detects: text overlap, page boundary overflow, abnormal line spacing
+Usage: python pdf_layout_check.py <pdf_path>
+"""
 import pymupdf, sys, os
 
+
 def check_pdf_layout(pdf_path):
+    """Check PDF for layout issues. Returns list of issue descriptions."""
     issues = []
     doc = pymupdf.open(pdf_path)
+
     for page_num in range(len(doc)):
         page = doc[page_num]
         page_rect = page.rect
         blocks = page.get_text("dict")["blocks"]
+
+        # Collect all text line bounding boxes
         line_bboxes = []
         for block in blocks:
             if block["type"] != 0:
@@ -55,21 +72,33 @@ def check_pdf_layout(pdf_path):
                 text = "".join(s["text"] for s in line["spans"])
                 if text.strip():
                     line_bboxes.append({"bbox": bbox, "text": text[:30], "page": page_num + 1})
-        margin = 10
+
+        # Check 1: Text overflow beyond page boundaries
+        margin = 10  # Allow 10pt tolerance
         for item in line_bboxes:
             b = item["bbox"]
             if b[0] < page_rect.x0 - margin or b[2] > page_rect.x1 + margin:
                 issues.append(f"P{item['page']}: overflow - '{item['text']}'")
+            if b[1] < page_rect.y0 - margin or b[3] > page_rect.y1 + margin:
+                issues.append(f"P{item['page']}: overflow(vertical) - '{item['text']}'")
+
+        # Check 2: Text block overlap (bbox intersection > 5pt²)
         for i in range(len(line_bboxes)):
             for j in range(i + 1, len(line_bboxes)):
                 b1, b2 = line_bboxes[i]["bbox"], line_bboxes[j]["bbox"]
                 ox = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
                 oy = max(0, min(b1[3], b2[3]) - max(b1[1], b2[1]))
                 if ox * oy > 5:
-                    issues.append(f"P{line_bboxes[i]['page']}: overlap")
+                    issues.append(
+                        f"P{line_bboxes[i]['page']}: overlap - "
+                        f"'{line_bboxes[i]['text']}' vs '{line_bboxes[j]['text']}'"
+                    )
+
+        # Check 3: Abnormal line spacing (adjacent lines gap < -2pt)
         sorted_lines = sorted(line_bboxes, key=lambda x: (x["bbox"][1], x["bbox"][0]))
         for i in range(len(sorted_lines) - 1):
-            b1, b2 = sorted_lines[i]["bbox"], sorted_lines[i + 1]["bbox"]
+            b1 = sorted_lines[i]["bbox"]
+            b2 = sorted_lines[i + 1]["bbox"]
             if sorted_lines[i]["text"].startswith('  '):
                 continue
             lh = b1[3] - b1[1]
@@ -78,26 +107,115 @@ def check_pdf_layout(pdf_path):
                 continue
             gap = b2[1] - b1[3]
             if gap < -2:
-                issues.append(f"P{sorted_lines[i]['page']}: spacing({gap:.1f}pt)")
+                issues.append(f"P{sorted_lines[i]['page']}: spacing({gap:.1f}pt) - '{sorted_lines[i]['text']}'")
+
     doc.close()
     return issues
 
+
 if __name__ == '__main__':
     path = sys.argv[1] if len(sys.argv) > 1 else 'output.pdf'
+    if not os.path.exists(path):
+        print(f"ERROR: File not found: {path}")
+        sys.exit(1)
+    print(f"Checking: {path}")
     issues = check_pdf_layout(path)
     if not issues:
         print("PASS: No layout issues detected.")
     else:
         print(f"ISSUES FOUND: {len(issues)}")
-        for i in issues[:20]: print(f"  - {i}")
+        for i in issues[:20]:
+            print(f"  - {i}")
+        if len(issues) > 20:
+            print(f"  ... and {len(issues) - 20} more")
+        sys.exit(1)
 ```
 
-## fpdf2 Best Practices (CJK Content)
+### Recommended Workflow Integration
 
-1. Always `align='L'` - justify causes CJK spacing issues
-2. Use `dry_run=True, output='LINES'` for table row height
-3. Strip `**bold**` markers with regex before rendering
-4. Strip `<!-- -->` HTML comments from source
-5. `set_x(l_margin)` before every `multi_cell()`
-6. Font: msyh.ttc (Microsoft YaHei) for CJK+English
-7. Replace emoji before rendering (msyh doesn't support)
+After deploying the script, add this to your project's workflow:
+
+1. **Manual check:** `python pdf_layout_check.py output.pdf`
+2. **Automated (with Kiro steering):** Create a steering file that triggers the check after any PDF generation script runs. Example steering frontmatter:
+
+```yaml
+---
+inclusion: fileMatch
+fileMatchPattern: "**/*pdf*.py"
+description: Auto-check PDF layout quality after generation
+---
+```
+
+## Detection Capabilities
+
+| Check | What it detects | Threshold | Common cause |
+|-------|----------------|-----------|--------------|
+| Overflow | Text beyond page boundaries | >10pt beyond margin | Wrong page size or margin settings |
+| Overlap | Two text blocks in same space | >5pt² intersection | Row height too small for content |
+| Spacing | Adjacent lines squished together | gap < -2pt | Missing line height calculation |
+
+## Common Workflows
+
+### Workflow 1: Check a Single PDF
+
+```bash
+python pdf_layout_check.py path/to/report.pdf
+```
+
+Output will be either:
+- `PASS: No layout issues detected.` — safe to deliver
+- `ISSUES FOUND: N` with details — fix the generation script and regenerate
+
+### Workflow 2: Batch Check All PDFs in a Directory
+
+```python
+import glob
+for pdf in glob.glob("out/*.pdf"):
+    issues = check_pdf_layout(pdf)
+    status = "PASS" if not issues else f"FAIL({len(issues)})"
+    print(f"  {status}: {pdf}")
+```
+
+### Workflow 3: Integrate into PDF Generation Script
+
+```python
+# At the end of your PDF generation script:
+from pdf_layout_check import check_pdf_layout
+
+pdf.output(output_path)
+issues = check_pdf_layout(output_path)
+if issues:
+    print(f"WARNING: {len(issues)} layout issues detected!")
+    for i in issues[:5]:
+        print(f"  - {i}")
+```
+
+## Troubleshooting
+
+### "ModuleNotFoundError: No module named 'pymupdf'"
+
+Install PyMuPDF:
+```bash
+pip install PyMuPDF
+```
+
+Note: The package name is `PyMuPDF` but the import is `pymupdf` (lowercase, no hyphen).
+
+### False positives in tables
+
+Tables with tight cell spacing may trigger overlap warnings. If you know the table is correct, check that cell padding is adequate (>2pt between adjacent cells).
+
+### Script reports overflow but PDF looks fine
+
+The margin tolerance is 10pt. Some PDF generators place decorative elements (headers, footers, page numbers) slightly outside the content area. These are usually safe to ignore if they're less than 15pt beyond margin.
+
+## Best Practices
+
+1. **Always run the check before delivering a PDF** — especially for CJK+English content
+2. **Fix issues in the generation script, not the PDF** — regenerate until PASS
+3. **Use `align='L'` in fpdf2** — justify mode causes severe spacing issues with CJK
+4. **Calculate table row heights properly** — use `dry_run=True, output='LINES'`
+5. **Strip markdown formatting** before rendering — `**bold**` markers will appear as literal text
+6. **Replace emoji** before rendering — most CJK fonts don't support emoji characters
+
+For detailed fpdf2 best practices, read the steering file: `fpdf2-best-practices.md`
